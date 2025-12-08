@@ -6,8 +6,13 @@ import ggwave
 import pyaudio
 import websockets
 from g711 import decode_ulaw
+from pyogg import OpusDecoder
 from websockets import ServerConnection
 
+
+opus_decoder = OpusDecoder()
+opus_decoder.set_channels(1)
+opus_decoder.set_sampling_frequency(48000)
 
 async def handle_connection(ws: ServerConnection, instance):
     print("New connection established")
@@ -38,14 +43,17 @@ async def handle_connection(ws: ServerConnection, instance):
 
                     recording += data
                     print(len(recording))
-                    if len(recording) > 160 * 500:
+                    if len(recording) > 160 * 50:
                         p = pyaudio.PyAudio()
                         stream = p.open(format=pyaudio.paFloat32, channels=1, rate=8000, output=True)
-                        stream.write(decode_ulaw(bytes(recording)).tobytes())
+                        buf = bytearray(recording)
+                        memoryview(buf)
+                        opus_decoder.decode(memoryview(buf))
+                        stream.write(opus_decoder.decode(memoryview(buf)).tobytes())
                         stream.stop_stream()
                         stream.close()
 
-                        res = ggwave.decode(instance, decode_ulaw(bytes(recording)).tobytes())
+                        res = ggwave.decode(instance, opus_decoder.decode(memoryview(buf)).tobytes())
                         if res is not None:
                             print("Received text: " + res.decode("utf-8"))
 
@@ -64,6 +72,7 @@ async def handle_connection(ws: ServerConnection, instance):
                     # p.terminate()
                 except Exception as e:
                     print(f"Error decoding message: {e}")
+                    recording = []
             i += 1
 
     except websockets.exceptions.ConnectionClosed:
