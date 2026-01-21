@@ -45,9 +45,11 @@ async def handle_connection(ws: ServerConnection, instance):
                     print(len(recording))
                     if len(recording) > 160 * 50:
                         p = pyaudio.PyAudio()
-                        stream = p.open(format=pyaudio.paFloat32, channels=1, rate=8000, output=True)
+                        stream = p.open(format=pyaudio.paInt16, channels=1, rate=48000, output=True)
+                        with open("recording.opus", "wb") as f:
+                            f.write(bytes(recording))
+                            f.close()
                         buf = bytearray(recording)
-                        memoryview(buf)
                         opus_decoder.decode(memoryview(buf))
                         stream.write(opus_decoder.decode(memoryview(buf)).tobytes())
                         stream.stop_stream()
