@@ -1,5 +1,6 @@
 import asyncio
 import json
+import wave
 from functools import partial
 
 import ggwave
@@ -11,14 +12,15 @@ from websockets import ServerConnection
 
 
 opus_decoder = OpusDecoder()
-opus_decoder.set_channels(1)
+opus_decoder.set_channels(2)
 opus_decoder.set_sampling_frequency(48000)
 
 async def handle_connection(ws: ServerConnection, instance):
     print("New connection established")
 
     try:
-        i = 0
+        packet_id = 0
+        recording_id = -1
         recording = []
         while True:
             data = await ws.recv()
@@ -41,21 +43,25 @@ async def handle_connection(ws: ServerConnection, instance):
                     #     # print("No valid ggwave message decoded")
                     #     ...
 
+
+                    data = opus_decoder.decode(memoryview(bytearray(data)))
                     recording += data
-                    print(len(recording))
-                    if len(recording) > 160 * 50:
+                    # print(len(recording))
+                    if len(recording) > 16000 * 50:
+                        recording_id += 1
+                        print(f"Analyzing recording #{recording_id}")
+                        with wave.open("out.wav", "wb") as wf:
+                            wf.setnchannels(2)
+                            wf.setsampwidth(2)
+                            wf.setframerate(48000)
+                            wf.writeframes(b"".join(recording))
                         p = pyaudio.PyAudio()
-                        stream = p.open(format=pyaudio.paInt16, channels=1, rate=48000, output=True)
-                        with open("recording.opus", "wb") as f:
-                            f.write(bytes(recording))
-                            f.close()
-                        buf = bytearray(recording)
-                        opus_decoder.decode(memoryview(buf))
-                        stream.write(opus_decoder.decode(memoryview(buf)).tobytes())
+                        stream = p.open(format=pyaudio.paInt16, channels=2, rate=48000, output=True)
+                        stream.write(b"".join(recording))
                         stream.stop_stream()
                         stream.close()
 
-                        res = ggwave.decode(instance, opus_decoder.decode(memoryview(buf)).tobytes())
+                        res = ggwave.decode(instance, b"".join(recording))
                         if res is not None:
                             print("Received text: " + res.decode("utf-8"))
 
@@ -75,7 +81,7 @@ async def handle_connection(ws: ServerConnection, instance):
                 except Exception as e:
                     print(f"Error decoding message: {e}")
                     recording = []
-            i += 1
+            packet_id += 1
 
     except websockets.exceptions.ConnectionClosed:
         print("Connection closed")
