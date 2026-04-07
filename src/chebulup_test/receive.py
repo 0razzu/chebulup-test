@@ -12,10 +12,6 @@ from websockets import ServerConnection
 
 from pyogg import OpusDecoder
 
-opus_decoder = OpusDecoder()
-opus_decoder.set_channels(2)
-opus_decoder.set_sampling_frequency(48000)
-
 
 def split_by_channels(recording: bytes) -> tuple[bytes, bytes]:
     samples = array.array("h")
@@ -38,81 +34,75 @@ def int16_to_float32(recording: bytes) -> bytes:
     return pcm.tobytes()
 
 
-async def handle_connection(ws: ServerConnection, instance):
+async def handle_connection(ws: ServerConnection):
     print("New connection established")
 
+    opus_decoder = OpusDecoder()
+    opus_decoder.set_channels(2)
+    opus_decoder.set_sampling_frequency(48000)
+
+    ggwave_instance = ggwave.init()
+
+    buf = b""
     # f = open("integration.raw", "wb")
-    packet_id = 0
-    decodable_sequence = b""
-    while True:
-        try:
+    # packet_id = 0
+    try:
+        while True:
             data = await ws.recv()
-        except websockets.exceptions.ConnectionClosed:
-            print("Connection closed")
-            # f.flush()
-            # f.close()
-            return
 
-        if isinstance(data, str):
-            data = json.loads(data)
-            print(data)
-            if data["request"] == "setup":
-                await ws.send(json.dumps({
-                    "response": "setup",
-                    "id": data["id"],
-                    "codecs": data["codecs"],
-                }))
-        else:
-            try:
-                data = opus_decoder.decode(memoryview(bytearray(data)))
-                # print(f"Packet #{packet_id}")
-                # with wave.open("out.wav", "wb") as wf:
-                #     wf.setnchannels(2)
-                #     wf.setsampwidth(2)
-                #     wf.setframerate(48000)
-                #     wf.writeframes(recording)
+            if isinstance(data, str):
+                data = json.loads(data)
+                print(data)
+                if data["request"] == "setup":
+                    await ws.send(json.dumps({
+                        "response": "setup",
+                        "id": data["id"],
+                        "codecs": [{"name": "opus"}],
+                    }))
+            else:
+                try:
+                    data = opus_decoder.decode(memoryview(bytearray(data)))
+                    # print(f"Packet #{packet_id}")
+                    # with wave.open("out.wav", "wb") as wf:
+                    #     wf.setnchannels(2)
+                    #     wf.setsampwidth(2)
+                    #     wf.setframerate(48000)
+                    #     wf.writeframes(recording)
 
-                # p = pyaudio.PyAudio()
-                # stream = p.open(format=pyaudio.paFloat32, channels=1, rate=48000, output=True)
-                # stream.write(int16_to_float32(split_by_channels(data)[0]))
-                # stream.stop_stream()
-                # stream.close()
+                    # p = pyaudio.PyAudio()
+                    # stream = p.open(format=pyaudio.paFloat32, channels=1, rate=48000, output=True)
+                    # stream.write(int16_to_float32(split_by_channels(data)[0]))
+                    # stream.stop_stream()
+                    # stream.close()
 
-                payload = int16_to_float32(split_by_channels(data)[0])
-                # f.write(payload)
-                decodable_sequence += payload
-                if len(decodable_sequence) >= 4096:
-                    # print("Decoding")
-                    chunk = decodable_sequence[:4096]
-                    decodable_sequence = decodable_sequence[4096:]
-                    res = ggwave.decode(instance, chunk)
-                    if res is not None:
-                        print("Received text: " + res.decode("utf-8"))
+                    payload = int16_to_float32(split_by_channels(data)[0])
+                    # f.write(payload)
+                    buf += payload
+                    if len(buf) >= 4096:
+                        # print("Decoding")
+                        chunk = buf[:4096]
+                        buf = buf[4096:]
+                        res = ggwave.decode(ggwave_instance, chunk)
+                        if res is not None:
+                            print("Received text: " + res.decode("utf-8"))
 
-            except Exception as e:
-                print(f"Error decoding message: {traceback.format_exc()}")
+                except Exception as e:
+                    print(f"Error decoding message: {traceback.format_exc()}")
 
-            packet_id += 1
+                # packet_id += 1
+    except websockets.exceptions.ConnectionClosed:
+        print("Connection closed")
+        # f.flush()
+        # f.close()
+    finally:
+        ggwave.free(ggwave_instance)
 
 
-async def run_server(instance):
-    host = "192.168.57.1"
-    port = 12345
-    handler = partial(handle_connection, instance=instance)
-    server = await websockets.serve(handler, host, port)
+async def run_server(host: str, port: int):
+    server = await websockets.serve(handle_connection, host, port)
     print(f"WebSocket server running on ws://{host}:{port}")
     await server.wait_closed()
 
 
-async def main():
-    instance = ggwave.init()
-    try:
-        await run_server(instance)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        ggwave.free(instance)
-
-
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(run_server(host="192.168.57.1", port=12345))
