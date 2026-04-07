@@ -43,6 +43,7 @@ async def handle_connection(ws: ServerConnection, instance):
 
     f = open("integration.raw", "wb")
     packet_id = 0
+    decodable_sequence = b""
     while True:
         try:
             data = await ws.recv()
@@ -64,7 +65,7 @@ async def handle_connection(ws: ServerConnection, instance):
         else:
             try:
                 data = opus_decoder.decode(memoryview(bytearray(data)))
-                print(f"Packet #{packet_id}")
+                # print(f"Packet #{packet_id}")
                 # with wave.open("out.wav", "wb") as wf:
                 #     wf.setnchannels(2)
                 #     wf.setsampwidth(2)
@@ -79,9 +80,14 @@ async def handle_connection(ws: ServerConnection, instance):
 
                 payload = int16_to_float32(split_by_channels(data)[0])
                 f.write(payload)
-                res = ggwave.decode(instance, payload)
-                if res is not None:
-                    print("Received text: " + res.decode("utf-8"))
+                decodable_sequence += payload
+                if len(decodable_sequence) >= 4096:
+                    # print("Decoding")
+                    chunk = decodable_sequence[:4096]
+                    decodable_sequence = decodable_sequence[4096:]
+                    res = ggwave.decode(instance, chunk)
+                    if res is not None:
+                        print("Received text: " + res.decode("utf-8"))
 
             except Exception as e:
                 print(f"Error decoding message: {traceback.format_exc()}")
