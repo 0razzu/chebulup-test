@@ -41,7 +41,7 @@ def int16_to_float32(recording: bytes) -> bytes:
 async def handle_connection(ws: ServerConnection, instance):
     print("New connection established")
 
-    f = open("integration.raw", "wb")
+    # f = open("integration.raw", "wb")
     packet_id = 0
     decodable_sequence = b""
     while True:
@@ -49,8 +49,8 @@ async def handle_connection(ws: ServerConnection, instance):
             data = await ws.recv()
         except websockets.exceptions.ConnectionClosed:
             print("Connection closed")
-            f.flush()
-            f.close()
+            # f.flush()
+            # f.close()
             return
 
         if isinstance(data, str):
@@ -79,7 +79,7 @@ async def handle_connection(ws: ServerConnection, instance):
                 # stream.close()
 
                 payload = int16_to_float32(split_by_channels(data)[0])
-                f.write(payload)
+                # f.write(payload)
                 decodable_sequence += payload
                 if len(decodable_sequence) >= 4096:
                     # print("Decoding")
