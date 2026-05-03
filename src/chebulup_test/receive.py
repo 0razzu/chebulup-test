@@ -2,15 +2,14 @@ import array
 import asyncio
 import json
 import traceback
-from functools import partial
 
 import ggwave
 import numpy as np
-import pyaudio
 import websockets
 from websockets import ServerConnection
 
 from pyogg import OpusDecoder
+from src.chebulup_test.models import PayloadHeaderV1, PayloadType
 
 
 def split_by_channels(recording: bytes) -> tuple[bytes, bytes]:
@@ -44,7 +43,10 @@ async def handle_connection(ws: ServerConnection):
     ggwave_instance = ggwave.init()
 
     buf = b""
-    # f = open("integration.raw", "wb")
+    header: PayloadHeaderV1 | None = None
+    cur_msg = b""
+    cur_msg_len = 0
+    f = open("integration.raw", "wb")
     # packet_id = 0
     try:
         while True:
@@ -76,15 +78,39 @@ async def handle_connection(ws: ServerConnection):
                     # stream.close()
 
                     payload = int16_to_float32(split_by_channels(data)[0])
-                    # f.write(payload)
+                    f.write(payload)
                     buf += payload
                     if len(buf) >= 4096:
                         # print("Decoding")
                         chunk = buf[:4096]
                         buf = buf[4096:]
-                        res = ggwave.decode(ggwave_instance, chunk)
+                        res: bytes = ggwave.decode(ggwave_instance, chunk)
                         if res is not None:
-                            print("Received text: " + res.decode("utf-8"))
+                            print("GOT A PART:", res)
+
+                            if header is not None:
+                                cur_msg += res
+                                cur_msg_len += len(res)
+
+                                if cur_msg_len == header.len:
+                                    print("FULL MSG: ", end="")
+                                    match header.type:
+                                        case PayloadType.DATA:
+                                            print(cur_msg)
+                                        case PayloadType.TEXT:
+                                            print(cur_msg.decode())
+
+                                    buf = b""
+                                    header = None
+                                    cur_msg = b""
+                                    cur_msg_len = 0
+                            else:
+                                header, offset = PayloadHeaderV1.from_bytes(res)
+                                cur_msg += res[offset:]
+                                cur_msg_len += len(res) - offset
+                        else:
+                            # send(repeat)
+                            ...
 
                 except Exception as e:
                     print(f"Error decoding message: {traceback.format_exc()}")
@@ -92,8 +118,8 @@ async def handle_connection(ws: ServerConnection):
                 # packet_id += 1
     except websockets.exceptions.ConnectionClosed:
         print("Connection closed")
-        # f.flush()
-        # f.close()
+        f.flush()
+        f.close()
     finally:
         ggwave.free(ggwave_instance)
 
