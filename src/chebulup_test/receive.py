@@ -91,23 +91,26 @@ async def handle_connection(ws: ServerConnection):
                             if header is not None:
                                 cur_msg += res
                                 cur_msg_len += len(res)
-
-                                if cur_msg_len == header.len:
-                                    print("FULL MSG: ", end="")
-                                    match header.type:
-                                        case PayloadType.DATA:
-                                            print(cur_msg)
-                                        case PayloadType.TEXT:
-                                            print(cur_msg.decode())
-
-                                    buf = b""
-                                    header = None
-                                    cur_msg = b""
-                                    cur_msg_len = 0
+                                print(f"{cur_msg_len} bytes so far")
                             else:
                                 header, offset = PayloadHeaderV1.from_bytes(res)
                                 cur_msg += res[offset:]
                                 cur_msg_len += len(res) - offset
+
+                                print(f"EXPECTING {header.len} bytes of ${header.type}")
+
+                            if cur_msg_len == header.len:
+                                print("FULL MSG: ", end="")
+                                match header.type:
+                                    case PayloadType.DATA:
+                                        print(cur_msg)
+                                    case PayloadType.TEXT:
+                                        print(cur_msg.decode())
+
+                                buf = b""
+                                header = None
+                                cur_msg = b""
+                                cur_msg_len = 0
                         else:
                             # send(repeat)
                             ...

@@ -41,7 +41,7 @@ class PayloadV1(Payload):
         return (
             struct.pack("!B", self.v) +
             struct.pack("!B", self.type.value) +
-            struct.pack("!I", len(self.data)) +
+            struct.pack("!Q", len(self.data)) +
             self.data
         )
 
@@ -55,7 +55,7 @@ class PayloadHeaderV1(PayloadHeader):
 
     @classmethod
     def from_bytes(cls, raw: bytes) -> tuple["PayloadHeaderV1", int]:
-        if len(raw) < 6:
+        if len(raw) < 1 + 1 + 8:
             raise ValueError("Payload too short")
 
         offset = 0
@@ -69,8 +69,8 @@ class PayloadHeaderV1(PayloadHeader):
         offset += 1
         type_ = PayloadType(type_byte)
 
-        (length,) = struct.unpack_from("!I", raw, offset)
-        offset += 4
+        (length,) = struct.unpack_from("!Q", raw, offset)
+        offset += 8
         if length < 0:
             raise ValueError(f"Invalid payload length: {length}")
 
