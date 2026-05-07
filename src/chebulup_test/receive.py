@@ -101,12 +101,12 @@ async def handle_connection(ws: ServerConnection):
                             if state == HandlerState.READING_DATA:
                                 cur_msg_end_in_chunk = min(len(ggdecoded), header.len - cur_len)
                                 if header.type == PayloadType.TEXT:
-                                    cur_msg += ggdecoded[cur_msg_end_in_chunk:]
+                                    cur_msg += ggdecoded[:cur_msg_end_in_chunk]
                                 else:
                                     if cur_msg:
                                         data_f.write(cur_msg)
                                         cur_msg = b""
-                                    data_f.write(ggdecoded[cur_msg_end_in_chunk:])
+                                    data_f.write(ggdecoded[:cur_msg_end_in_chunk])
                                 cur_len += cur_msg_end_in_chunk
                                 # TODO process ggdecoded’s continuation
 
@@ -169,6 +169,7 @@ async def handle_connection(ws: ServerConnection):
                                 cur_msg = b""
                                 cur_len = 0
                                 data_f = None
+                                state = HandlerState.WAITING
                         else:
                             # send(repeat)
                             ...
