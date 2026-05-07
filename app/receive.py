@@ -3,6 +3,7 @@ import asyncio
 import json
 import traceback
 from enum import Enum, auto
+from pathlib import Path
 from uuid import uuid4
 
 import ggwave
@@ -12,6 +13,8 @@ from websockets import ServerConnection
 
 from deps.pyogg import OpusDecoder
 from models import PayloadHeaderV1, PayloadType
+
+GGWAVE_CHUNK_SIZE = 4096
 
 
 class HandlerState(Enum):
@@ -24,7 +27,7 @@ def split_by_channels(recording: bytes) -> tuple[bytes, bytes]:
     samples = array.array("h")
     samples.frombytes(recording)
 
-    l = array.array("h")
+    l = array.array("h")  # noqa: E741
     r = array.array("h")
 
     for i in range(0, len(samples), 2):
@@ -41,7 +44,7 @@ def int16_to_float32(recording: bytes) -> bytes:
     return pcm.tobytes()
 
 
-async def handle_connection(ws: ServerConnection):
+async def handle_connection(ws: ServerConnection) -> None:  # noqa: PLR0912, PLR0915
     print("New connection established")
 
     opus_decoder = OpusDecoder()
@@ -55,7 +58,7 @@ async def handle_connection(ws: ServerConnection):
     header: PayloadHeaderV1 | None = None
     cur_msg = b""
     cur_len = 0
-    audio_f = open("integration.raw", "wb")
+    audio_f = Path("integration.raw").open("wb")  # noqa: ASYNC230, SIM115
     data_f = None
     # packet_id = 0
     try:
@@ -66,11 +69,15 @@ async def handle_connection(ws: ServerConnection):
                 data = json.loads(data)
                 print(data)
                 if data["request"] == "setup":
-                    await ws.send(json.dumps({
-                        "response": "setup",
-                        "id": data["id"],
-                        "codecs": [{"name": "opus"}],
-                    }))
+                    await ws.send(
+                        json.dumps(
+                            {
+                                "response": "setup",
+                                "id": data["id"],
+                                "codecs": [{"name": "opus"}],
+                            }
+                        )
+                    )
             else:
                 try:
                     data = opus_decoder.decode(memoryview(bytearray(data)))
@@ -90,10 +97,10 @@ async def handle_connection(ws: ServerConnection):
                     payload = int16_to_float32(split_by_channels(data)[0])
                     audio_f.write(payload)
                     buf += payload
-                    if len(buf) >= 4096:
+                    if len(buf) >= GGWAVE_CHUNK_SIZE:
                         # print("Decoding")
-                        chunk = buf[:4096]
-                        buf = buf[4096:]
+                        chunk = buf[:GGWAVE_CHUNK_SIZE]
+                        buf = buf[GGWAVE_CHUNK_SIZE:]
                         ggdecoded: bytes = ggwave.decode(ggwave_instance, chunk)
                         if ggdecoded is not None:
                             print("GOT A PART:", ggdecoded)
@@ -122,7 +129,7 @@ async def handle_connection(ws: ServerConnection):
                                     print(f"EXPECTING file name of {name_len} bytes")
 
                                     if cur_len >= name_len:  # fname fits this chunk
-                                        data_f = open(cur_msg[:name_len].decode(), "wb")
+                                        data_f = Path(cur_msg[:name_len].decode()).open("wb")  # noqa: ASYNC230, SIM115
                                         state = HandlerState.READING_DATA
                                         cur_msg = cur_msg[name_len:]
                                         cur_len -= name_len
@@ -134,20 +141,20 @@ async def handle_connection(ws: ServerConnection):
                                         )
                                 else:
                                     if header.type == PayloadType.DATA:
-                                        data_f = open(str(uuid4()), "w")
+                                        data_f = Path(str(uuid4())).open("wb")  # noqa: ASYNC230, SIM115
                                     state = HandlerState.READING_DATA
                                     print(f"EXPECTING {header.len} bytes of {header.type}, already got {cur_len} bytes")
                             elif state == HandlerState.READING_FNAME:
                                 if cur_len + len(ggdecoded) >= header.name_len:
                                     name_end = header.name_len - cur_len
                                     name = (cur_msg + ggdecoded[:name_end]).decode()
-                                    data_f = open(name, "wb")
+                                    data_f = Path(name).open("wb")  # noqa: ASYNC230, SIM115
                                     cur_msg = ggdecoded[name_end:]
                                     cur_len = len(ggdecoded) - name_end
 
                                     state = HandlerState.READING_DATA
                                     if cur_len >= header.len:
-                                        cur_msg = cur_msg[:header.len]
+                                        cur_msg = cur_msg[: header.len]
                                         cur_len = header.len
                                         state = HandlerState.WAITING
 
@@ -174,7 +181,7 @@ async def handle_connection(ws: ServerConnection):
                             # send(repeat)
                             ...
 
-                except Exception as e:
+                except Exception:
                     print(f"Error decoding message: {traceback.format_exc()}")
 
                 # packet_id += 1
@@ -186,7 +193,7 @@ async def handle_connection(ws: ServerConnection):
         ggwave.free(ggwave_instance)
 
 
-async def run_server(host: str, port: int):
+async def run_server(host: str, port: int) -> None:
     server = await websockets.serve(handle_connection, host, port)
     print(f"WebSocket server running on ws://{host}:{port}")
     await server.wait_closed()

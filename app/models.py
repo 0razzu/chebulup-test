@@ -39,11 +39,7 @@ class PayloadV1(Payload):
         self.name = name
 
     def to_bytes(self) -> bytes:
-        buf = (
-            struct.pack("!B", self.v) +
-            struct.pack("!B", self.type.value) +
-            struct.pack("!Q", len(self.data))
-        )
+        buf = struct.pack("!B", self.v) + struct.pack("!B", self.type.value) + struct.pack("!Q", len(self.data))
         if self.type == PayloadType.DATA:
             buf += struct.pack("!H", len(self.name)) + self.name.encode()
 

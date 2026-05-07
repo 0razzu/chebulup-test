@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import ggwave
 
 CHUNK_SIZE = 1024  # number of float32 samples per chunk
@@ -7,7 +9,7 @@ print("Reading from file...")
 
 instance = ggwave.init()
 
-with open("integration.raw", "rb") as f:
+with Path("integration.raw").open("rb") as f:
     i = 0
 
     try:
@@ -24,7 +26,7 @@ with open("integration.raw", "rb") as f:
 
             if res is not None:
                 try:
-                    print(f"Received text: {res.decode("utf-8")}")
+                    print(f"Received text: {res.decode('utf-8')}")
                 except Exception as e:
                     print(e)
 
