@@ -2,6 +2,8 @@ import array
 import asyncio
 import json
 import traceback
+from enum import Enum, auto
+from uuid import uuid4
 
 import ggwave
 import numpy as np
@@ -10,6 +12,12 @@ from websockets import ServerConnection
 
 from pyogg import OpusDecoder
 from src.chebulup_test.models import PayloadHeaderV1, PayloadType
+
+
+class HandlerState(Enum):
+    WAITING = auto()
+    READING_FNAME = auto()
+    READING_DATA = auto()
 
 
 def split_by_channels(recording: bytes) -> tuple[bytes, bytes]:
@@ -42,11 +50,13 @@ async def handle_connection(ws: ServerConnection):
 
     ggwave_instance = ggwave.init()
 
+    state = HandlerState.WAITING
     buf = b""
     header: PayloadHeaderV1 | None = None
     cur_msg = b""
-    cur_msg_len = 0
-    f = open("integration.raw", "wb")
+    cur_len = 0
+    audio_f = open("integration.raw", "wb")
+    data_f = None
     # packet_id = 0
     try:
         while True:
@@ -78,39 +88,87 @@ async def handle_connection(ws: ServerConnection):
                     # stream.close()
 
                     payload = int16_to_float32(split_by_channels(data)[0])
-                    f.write(payload)
+                    audio_f.write(payload)
                     buf += payload
                     if len(buf) >= 4096:
                         # print("Decoding")
                         chunk = buf[:4096]
                         buf = buf[4096:]
-                        res: bytes = ggwave.decode(ggwave_instance, chunk)
-                        if res is not None:
-                            print("GOT A PART:", res)
+                        ggdecoded: bytes = ggwave.decode(ggwave_instance, chunk)
+                        if ggdecoded is not None:
+                            print("GOT A PART:", ggdecoded)
 
-                            if header is not None:
-                                cur_msg += res
-                                cur_msg_len += len(res)
-                                print(f"{cur_msg_len} bytes so far")
-                            else:
-                                header, offset = PayloadHeaderV1.from_bytes(res)
-                                cur_msg += res[offset:]
-                                cur_msg_len += len(res) - offset
+                            if state == HandlerState.READING_DATA:
+                                cur_msg_end_in_chunk = min(len(ggdecoded), header.len - cur_len)
+                                if header.type == PayloadType.TEXT:
+                                    cur_msg += ggdecoded[cur_msg_end_in_chunk:]
+                                else:
+                                    if cur_msg:
+                                        data_f.write(cur_msg)
+                                        cur_msg = b""
+                                    data_f.write(ggdecoded[cur_msg_end_in_chunk:])
+                                cur_len += cur_msg_end_in_chunk
+                                # TODO process ggdecoded’s continuation
 
-                                print(f"EXPECTING {header.len} bytes of ${header.type}")
+                                print(f"{cur_len} bytes so far")
+                            elif state == HandlerState.WAITING:
+                                header, offset = PayloadHeaderV1.from_bytes(ggdecoded)
+                                cur_msg = ggdecoded[offset:]
+                                cur_len = len(ggdecoded) - offset
 
-                            if cur_msg_len == header.len:
-                                print("FULL MSG: ", end="")
+                                name_len = header.name_len
+                                if name_len > 0:
+                                    state = HandlerState.READING_FNAME
+                                    print(f"EXPECTING file name of {name_len} bytes")
+
+                                    if cur_len >= name_len:  # fname fits this chunk
+                                        data_f = open(cur_msg[:name_len].decode(), "wb")
+                                        state = HandlerState.READING_DATA
+                                        cur_msg = cur_msg[name_len:]
+                                        cur_len -= name_len
+
+                                        state = HandlerState.READING_DATA
+                                        print(
+                                            f"EXPECTING {header.len} bytes of {header.type}, "
+                                            f"already got {cur_len} bytes"
+                                        )
+                                else:
+                                    if header.type == PayloadType.DATA:
+                                        data_f = open(str(uuid4()), "w")
+                                    state = HandlerState.READING_DATA
+                                    print(f"EXPECTING {header.len} bytes of {header.type}, already got {cur_len} bytes")
+                            elif state == HandlerState.READING_FNAME:
+                                if cur_len + len(ggdecoded) >= header.name_len:
+                                    name_end = header.name_len - cur_len
+                                    name = (cur_msg + ggdecoded[:name_end]).decode()
+                                    data_f = open(name, "wb")
+                                    cur_msg = ggdecoded[name_end:]
+                                    cur_len = len(ggdecoded) - name_end
+
+                                    state = HandlerState.READING_DATA
+                                    if cur_len >= header.len:
+                                        cur_msg = cur_msg[:header.len]
+                                        cur_len = header.len
+                                        state = HandlerState.WAITING
+
+                                else:
+                                    cur_msg += ggdecoded
+                                    cur_len += len(ggdecoded)
+
+                            if cur_len == header.len:
                                 match header.type:
                                     case PayloadType.DATA:
-                                        print(cur_msg)
+                                        data_f.flush()
+                                        data_f.close()
+                                        print(f"file {data_f.name} written")
                                     case PayloadType.TEXT:
-                                        print(cur_msg.decode())
+                                        print(f"FULL MSG: {cur_msg.decode()}")
 
                                 buf = b""
                                 header = None
                                 cur_msg = b""
-                                cur_msg_len = 0
+                                cur_len = 0
+                                data_f = None
                         else:
                             # send(repeat)
                             ...
@@ -121,8 +179,8 @@ async def handle_connection(ws: ServerConnection):
                 # packet_id += 1
     except websockets.exceptions.ConnectionClosed:
         print("Connection closed")
-        f.flush()
-        f.close()
+        audio_f.flush()
+        audio_f.close()
     finally:
         ggwave.free(ggwave_instance)
 
