@@ -1,5 +1,5 @@
 import ctypes
-from typing import Optional, Union, ByteString
+from typing import Optional, Union
 
 from . import opus
 from .pyogg_error import PyOggError
@@ -211,7 +211,7 @@ class OpusEncoder:
         # Check for any errors
         if result < 0:
             raise PyOggError(
-                "An error occurred while encoding to Opus format: "+
+                "An error occurred while encoding to Opus format: " +
                 opus.opus_strerror(result).decode("utf")
             )
 
@@ -280,8 +280,8 @@ class OpusEncoder:
         )
         if result != opus.OPUS_OK:
             raise PyOggError(
-                "Failed to obtain the algorithmic delay of "+
-                "the Opus encoder: "+
+                "Failed to obtain the algorithmic delay of " +
+                "the Opus encoder: " +
                 opus.opus_strerror(result).decode("utf")
             )
         delay_samples = delay.value
@@ -350,7 +350,7 @@ class OpusEncoder:
         # encoder
         if error != opus.OPUS_OK:
             raise PyOggError(
-                "An error occurred while creating the encoder: "+
+                "An error occurred while creating the encoder: " +
                 opus.opus_strerror(error).decode("utf")
             )
 

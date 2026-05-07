@@ -22,7 +22,7 @@ class FlacFile(AudioFile):
         if frame.contents.header.channels >= 2:
             arrays = []
             for i in range(frame.contents.header.channels):
-                arr = ctypes.cast(multi_channel_buf[i], ctypes.POINTER(flac.FLAC__int32*arr_size)).contents
+                arr = ctypes.cast(multi_channel_buf[i], ctypes.POINTER(flac.FLAC__int32 * arr_size)).contents
                 arrays.append(arr[:])
 
             arr = list(chain.from_iterable(zip(*arrays)))
@@ -31,7 +31,7 @@ class FlacFile(AudioFile):
             self.buffer_pos += len(arr)
 
         else:
-            arr = ctypes.cast(multi_channel_buf[0], ctypes.POINTER(flac.FLAC__int32*arr_size)).contents
+            arr = ctypes.cast(multi_channel_buf[0], ctypes.POINTER(flac.FLAC__int32 * arr_size)).contents
             self.buffer[self.buffer_pos : self.buffer_pos + arr_size] = arr[:]
             self.buffer_pos += arr_size
         return 0
@@ -40,12 +40,13 @@ class FlacFile(AudioFile):
         if not self.buffer:
             self.total_samples = metadata.contents.data.stream_info.total_samples
             self.channels = metadata.contents.data.stream_info.channels
-            Buffer = flac.FLAC__int16*(self.total_samples * self.channels)
+            Buffer = flac.FLAC__int16 * (self.total_samples * self.channels)
             self.buffer = Buffer()
             self.frequency = metadata.contents.data.stream_info.sample_rate
 
     def error_callback(self,decoder, status, client_data):
-        raise PyOggError("An error occured during the process of decoding. Status enum: {}".format(flac.FLAC__StreamDecoderErrorStatusEnum[status]))
+        raise PyOggError("An error occured during the process of decoding. Status enum: {}".format(
+            flac.FLAC__StreamDecoderErrorStatusEnum[status]))
 
     def __init__(self, path):
         self.decoder = flac.FLAC__stream_decoder_new()

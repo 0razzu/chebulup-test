@@ -1,5 +1,4 @@
 import builtins
-import copy
 import ctypes
 import random
 import struct

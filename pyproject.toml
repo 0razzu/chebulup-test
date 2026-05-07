@@ -1,0 +1,39 @@
+[project]
+name = "chebulup"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "0razzu", email = "0razzu@protonmail.com"}
+]
+requires-python = ">=3.13"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.dependencies]
+ggwave = "0.4.2"
+numpy = "^2.4.4"
+
+[tool.poetry.group.lint.dependencies]
+ruff = "0.15.12"
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+src = ["app"]
+
+[tool.ruff.format]
+docstring-code-format = true
+line-ending = "lf"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "ANN", "ASYNC", "S", "B", "A", "C4", "G", "PIE", "Q", "SIM", "ARG", "PTH", "TD", "PL", "PERF"]
+ignore = ["ANN401", ]
+
+[tool.ruff.lint.flake8-annotations]
+mypy-init-return = true
+
+[tool.ruff.lint.pylint]
+max-args = 9
+

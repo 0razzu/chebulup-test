@@ -117,8 +117,8 @@ class OpusDecoder:
         # Check for any errors
         if result < 0:
             raise PyOggError(
-                "An error occurred while decoding an Opus-encoded "+
-                "packet: "+
+                "An error occurred while decoding an Opus-encoded " +
+                "packet: " +
                 opus.opus_strerror(result).decode("utf")
             )
 
@@ -178,8 +178,8 @@ class OpusDecoder:
         # Check for any errors
         if result < 0:
             raise PyOggError(
-                "An error occurred while decoding an Opus-encoded "+
-                "packet: "+
+                "An error occurred while decoding an Opus-encoded " +
+                "packet: " +
                 opus.opus_strerror(result).decode("utf")
             )
 
@@ -265,7 +265,7 @@ class OpusDecoder:
         # decoder
         if error != opus.OPUS_OK:
             raise PyOggError(
-                "An error occurred while creating the decoder: "+
+                "An error occurred while creating the decoder: " +
                 opus.opus_strerror(error).decode("utf")
             )
 

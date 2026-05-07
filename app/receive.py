@@ -10,8 +10,8 @@ import numpy as np
 import websockets
 from websockets import ServerConnection
 
-from pyogg import OpusDecoder
-from src.chebulup_test.models import PayloadHeaderV1, PayloadType
+from deps.pyogg import OpusDecoder
+from models import PayloadHeaderV1, PayloadType
 
 
 class HandlerState(Enum):

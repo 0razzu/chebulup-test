@@ -27,7 +27,7 @@ class OpusFile(AudioFile):
 
         # Allocate sufficient memory to store the entire PCM
         pcm_size = opus.op_pcm_total(of, -1)
-        Buf = opus.opus_int16*(pcm_size*self.channels)
+        Buf = opus.opus_int16 * (pcm_size * self.channels)
         buf = Buf()
 
         # Create a pointer to the newly allocated memory.  It

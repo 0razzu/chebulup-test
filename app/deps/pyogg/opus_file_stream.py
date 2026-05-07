@@ -86,7 +86,7 @@ class OpusFileStream:
         # correct size
         result_ptr = ctypes.cast(
             self.buffer_ptr,
-            ctypes.POINTER(opus.opus_int16 * (samples_read*self.channels))
+            ctypes.POINTER(opus.opus_int16 * (samples_read * self.channels))
         )
 
         # Convert the array to Python bytes

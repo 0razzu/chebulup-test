@@ -1,6 +1,6 @@
 import pyaudio
 
-from src.chebulup_test import pyogg
+from deps import pyogg
 
 FRAMES = int(48000 * 20 / 1000)
 

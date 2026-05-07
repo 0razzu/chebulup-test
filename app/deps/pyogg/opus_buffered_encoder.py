@@ -1,6 +1,5 @@
-import copy
 import ctypes
-from typing import Optional, ByteString, List, Tuple, Callable
+from typing import Optional, List, Tuple, Callable
 import warnings
 
 from . import opus

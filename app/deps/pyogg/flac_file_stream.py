@@ -21,17 +21,17 @@ class FlacFileStream:
         if frame.contents.header.channels >= 2:
             arrays = []
             for i in range(frame.contents.header.channels):
-                arr = ctypes.cast(multi_channel_buf[i], ctypes.POINTER(flac.FLAC__int32*arr_size)).contents
+                arr = ctypes.cast(multi_channel_buf[i], ctypes.POINTER(flac.FLAC__int32 * arr_size)).contents
                 arrays.append(arr[:])
 
             arr = list(chain.from_iterable(zip(*arrays)))
 
-            self.buffer = (flac.FLAC__int16*len(arr))(*arr)
+            self.buffer = (flac.FLAC__int16 * len(arr))(*arr)
             self.bytes_written = len(arr) * 2
 
         else:
-            arr = ctypes.cast(multi_channel_buf[0], ctypes.POINTER(flac.FLAC__int32*arr_size)).contents
-            self.buffer = (flac.FLAC__int16*len(arr))(*arr[:])
+            arr = ctypes.cast(multi_channel_buf[0], ctypes.POINTER(flac.FLAC__int32 * arr_size)).contents
+            self.buffer = (flac.FLAC__int16 * len(arr))(*arr[:])
             self.bytes_written = arr_size * 2
         return 0
 
@@ -41,7 +41,8 @@ class FlacFileStream:
         self.frequency = metadata.contents.data.stream_info.sample_rate
 
     def error_callback(self,decoder, status, client_data):
-        raise PyOggError("An error occured during the process of decoding. Status enum: {}".format(flac.FLAC__StreamDecoderErrorStatusEnum[status]))
+        raise PyOggError("An error occured during the process of decoding. Status enum: {}".format(
+            flac.FLAC__StreamDecoderErrorStatusEnum[status]))
 
     def __init__(self, path):
         self.decoder = flac.FLAC__stream_decoder_new()
@@ -68,11 +69,11 @@ class FlacFileStream:
         self.error_callback_ = flac.FLAC__StreamDecoderErrorCallback(self.error_callback)
 
         init_status = flac.FLAC__stream_decoder_init_file(self.decoder,
-                                      _to_char_p(path),
-                                      self.write_callback_,
-                                      self.metadata_callback_,
-                                      self.error_callback_,
-                                      self.client_data)
+                                                          _to_char_p(path),
+                                                          self.write_callback_,
+                                                          self.metadata_callback_,
+                                                          self.error_callback_,
+                                                          self.client_data)
 
         if init_status: # error
             raise PyOggError("An error occured when trying to open '{}': {}".format(path, flac.FLAC__StreamDecoderInitStatusEnum[init_status]))

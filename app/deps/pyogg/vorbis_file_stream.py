@@ -56,7 +56,7 @@ class VorbisFileStream:
         total_bytes_written = 0
 
         while True:
-            new_bytes = vorbis.ov_read(ctypes.byref(self.vf), self.buffer_, self._buffer_size*self.channels - total_bytes_written, 0, 2, 1, self.bitstream_pointer)
+            new_bytes = vorbis.ov_read(ctypes.byref(self.vf), self.buffer_, self._buffer_size * self.channels - total_bytes_written, 0, 2, 1, self.bitstream_pointer)
 
             array_ = ctypes.cast(self.buffer_, ctypes.POINTER(ctypes.c_char*(self._buffer_size*self.channels))).contents
 
