@@ -83,11 +83,16 @@ class PayloadHeaderV1(PayloadHeader):
             (name_len,) = struct.unpack_from("!H", raw, offset)
             offset += 2
 
-        #     if offset + name_len > len(raw):
-        #         raise ValueError("Payload too short for name")
-        #
-        #     name_bytes = raw[offset:offset + name_len]
-        #     name = name_bytes.decode()
-        #     offset += name_len
-
         return cls(type_, length, name_len), offset
+
+
+class Ack:
+    seq_no: int
+    accepted: bool
+
+    def __init__(self, seq_no: int, accepted: bool) -> None:
+        self.seq_no = seq_no
+        self.accepted = accepted
+
+    def to_bytes(self) -> bytes:
+        return struct.pack("!I", self.seq_no) + struct.pack("!?", self.accepted)

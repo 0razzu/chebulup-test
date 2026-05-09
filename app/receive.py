@@ -11,8 +11,8 @@ import numpy as np
 import websockets
 from websockets import ServerConnection
 
-from integrity_check import remove_checksum, validate_checksum
 from deps.pyogg import OpusDecoder
+from integrity_manager import remove_integrity_data, validate_checksum
 from models import PayloadHeaderV1, PayloadType
 
 GGWAVE_CHUNK_SIZE = 4096
@@ -52,6 +52,11 @@ async def handle_connection(ws: ServerConnection) -> None:  # noqa: PLR0912, PLR
     opus_decoder.set_channels(2)
     opus_decoder.set_sampling_frequency(48000)
 
+    # opus_encoder = OpusEncoder()
+    # opus_encoder.set_channels(1)
+    # opus_encoder.set_sampling_frequency(48000)
+    # opus_encoder.set_application("audio")
+
     ggwave_instance = ggwave.init()
 
     state = HandlerState.WAITING
@@ -61,6 +66,8 @@ async def handle_connection(ws: ServerConnection) -> None:  # noqa: PLR0912, PLR
     cur_len = 0
     audio_f = Path("integration.raw").open("wb")  # noqa: ASYNC230, SIM115
     data_f = None
+    last_seq_no = -1
+    # pending_seq_nos = set()
     # packet_id = 0
     try:
         while True:
@@ -106,10 +113,27 @@ async def handle_connection(ws: ServerConnection) -> None:  # noqa: PLR0912, PLR
                         if ggdecoded is not None:
                             print("GOT A PART:", ggdecoded)
 
-                            if not validate_checksum(ggdecoded):
-                                print("ERROR: invalid checksum")
-                                # TODO request resend
-                            ggdecoded = remove_checksum(ggdecoded)
+                            checksum_valid, gotten_seq_no = validate_checksum(ggdecoded)
+                            if not checksum_valid:
+                                last_seq_no += 1
+                                # pending_seq_nos.add(last_seq_no)
+
+                                print(f"ERROR: invalid checksum, seq_no: {last_seq_no}")
+
+                                # TODO float32_to_int16
+                                # ack = Ack(seq_no=last_seq_no, accepted=checksum_valid).to_bytes()
+                                # signed_ack = append_checksum(ack)
+                                # ggencoded_ack = ggwave.encode(
+                                #     payload,
+                                #     protocolId=1,
+                                #     volume=20,
+                                # )
+                                # opus_ack = opus_encoder.encode(ggencoded_ack)
+                                # await ws.send(opus_ack)
+                            else:
+                                last_seq_no = gotten_seq_no
+
+                            ggdecoded = remove_integrity_data(ggdecoded)
 
                             if state == HandlerState.READING_DATA:
                                 cur_msg_end_in_chunk = min(len(ggdecoded), header.len - cur_len)
