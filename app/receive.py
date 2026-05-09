@@ -11,6 +11,7 @@ import numpy as np
 import websockets
 from websockets import ServerConnection
 
+from checksum_processor import remove_checksum, validate_checksum
 from deps.pyogg import OpusDecoder
 from models import PayloadHeaderV1, PayloadType
 
@@ -105,6 +106,11 @@ async def handle_connection(ws: ServerConnection) -> None:  # noqa: PLR0912, PLR
                         if ggdecoded is not None:
                             print("GOT A PART:", ggdecoded)
 
+                            if not validate_checksum(ggdecoded):
+                                print("ERROR: invalid checksum")
+                                # TODO request resend
+                            ggdecoded = remove_checksum(ggdecoded)
+
                             if state == HandlerState.READING_DATA:
                                 cur_msg_end_in_chunk = min(len(ggdecoded), header.len - cur_len)
                                 if header.type == PayloadType.TEXT:
@@ -177,9 +183,6 @@ async def handle_connection(ws: ServerConnection) -> None:  # noqa: PLR0912, PLR
                                 cur_len = 0
                                 data_f = None
                                 state = HandlerState.WAITING
-                        else:
-                            # send(repeat)
-                            ...
 
                 except Exception:
                     print(f"Error decoding message: {traceback.format_exc()}")
