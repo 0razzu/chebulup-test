@@ -11,7 +11,7 @@ import numpy as np
 import websockets
 from websockets import ServerConnection
 
-from checksum_processor import remove_checksum, validate_checksum
+from integrity_check import remove_checksum, validate_checksum
 from deps.pyogg import OpusDecoder
 from models import PayloadHeaderV1, PayloadType
 
