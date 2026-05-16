@@ -31,3 +31,7 @@ def remove_integrity_data(chunk: bytes) -> bytes:
 def append_checksum(chunk: bytes) -> bytes:
     checksum = crc16(chunk)
     return chunk + checksum.to_bytes(CHECKSUM_SIZE)
+
+
+def sign(chunk: bytes, seq_no: int) -> bytes:
+    return append_checksum(chunk + seq_no.to_bytes(SEQ_NO_SIZE))
