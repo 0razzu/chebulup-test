@@ -1,294 +1,345 @@
-import array
 import asyncio
 import json
+import socket
+import struct
 import traceback
 from enum import Enum, auto
 from pathlib import Path
 from uuid import uuid4
 
 import ggwave
+import httpx
 import numpy as np
 import websockets
-from websockets import ServerConnection
 
-from deps.pyogg import OpusDecoder, OpusEncoder
 from integrity_manager import INTEGRITY_BYTES, remove_integrity_data, sign, validate_checksum
 from models import PayloadHeaderV1, PayloadType, PayloadV1
 
-GGWAVE_DECODE_CHUNK_SIZE = 4096
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+ASTERISK_HOST = "192.168.57.3"
+ASTERISK_PORT = 8088
+ASTERISK_USER = "internet-server"
+ASTERISK_PASS = "1234"
+STASIS_APP    = "internet-server"
+
+SERVER_HOST   = "192.168.57.1"
+RTP_PORT      = 7777
+
+SAMPLE_RATE   = 48_000
+FRAME_SAMPLES = 960
+FRAME_BYTES   = FRAME_SAMPLES * 2
+
 RAW_GGWAVE_CHUNK_SIZE = 140 - INTEGRITY_BYTES
+GGWAVE_DECODE_CHUNK   = 4096
+
+ARI_BASE = f"http://{ASTERISK_HOST}:{ASTERISK_PORT}/ari"
+ARI_WS   = (
+    f"ws://{ASTERISK_HOST}:{ASTERISK_PORT}/ari/events"
+    f"?app={STASIS_APP}&api_key={ASTERISK_USER}:{ASTERISK_PASS}"
+)
+ARI_AUTH = (ASTERISK_USER, ASTERISK_PASS)
+
+# ---------------------------------------------------------------------------
+# Shared UDP socket
+# ---------------------------------------------------------------------------
+rtp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+rtp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+rtp_sock.bind((SERVER_HOST, RTP_PORT))
+rtp_sock.setblocking(False)
 
 
-class HandlerState(Enum):
-    WAITING = auto()
-    READING_FNAME = auto()
-    READING_DATA = auto()
+# ---------------------------------------------------------------------------
+# ARI HTTP helpers
+# ---------------------------------------------------------------------------
+
+def ari_post(path: str, **params) -> dict:
+    r = httpx.post(f"{ARI_BASE}{path}", params=params, auth=ARI_AUTH)
+    r.raise_for_status()
+    return r.json() if r.content else {}
 
 
-def split_by_channels(recording: bytes) -> tuple[bytes, bytes]:
-    samples = array.array("h")
-    samples.frombytes(recording)
-
-    l = array.array("h")  # noqa: E741
-    r = array.array("h")
-
-    for i in range(0, len(samples), 2):
-        l.append(samples[i])
-        r.append(samples[i + 1])
-
-    return l.tobytes(), r.tobytes()
+def ari_delete(path: str) -> None:
+    r = httpx.delete(f"{ARI_BASE}{path}", auth=ARI_AUTH)
+    if r.status_code not in (200, 204, 404):
+        r.raise_for_status()
 
 
-def int16_to_float32(recording: bytes) -> bytes:
-    pcm = np.frombuffer(recording, dtype=np.int16)
-    pcm = pcm.astype(np.float32) / 32768
+# ---------------------------------------------------------------------------
+# PCM / RTP helpers
+# ---------------------------------------------------------------------------
 
-    return pcm.tobytes()
-
-
-def float32_to_int16(recording: bytes) -> bytes:
-    pcm = np.frombuffer(recording, dtype=np.float32)
-    pcm = np.clip(pcm * 32768, -32768, 32767).astype(np.int16)
-
-    return pcm.tobytes()
+def int16_to_float32(pcm: bytes) -> bytes:
+    return (np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0).tobytes()
 
 
-def encode_payload(payload_bytes: bytes, seq_no_start: int) -> list[bytes]:
-    chunks = []
+def float32_to_int16(pcm: bytes) -> bytes:
+    arr = np.frombuffer(pcm, dtype=np.float32)
+    return np.clip(arr * 32768, -32768, 32767).astype(np.int16).tobytes()
+
+
+def encode_payload(payload_bytes: bytes, seq_no_start: int) -> bytes:
+    """Returns LE int16 PCM @ 48 kHz."""
+    out = b""
     seq_no = seq_no_start
     for offset in range(0, len(payload_bytes), RAW_GGWAVE_CHUNK_SIZE):
-        chunk = payload_bytes[offset : offset + RAW_GGWAVE_CHUNK_SIZE]
+        chunk = payload_bytes[offset:offset + RAW_GGWAVE_CHUNK_SIZE]
         signed = sign(chunk, seq_no)
         seq_no += 1
-        encoded = ggwave.encode(signed.decode("latin-1"), protocolId=2, volume=20)
-        chunks.append(float32_to_int16(encoded))
-
-    return chunks
-
-
-async def send_chunks(ws: ServerConnection, opus_encoder: OpusEncoder, chunks: list[bytes]) -> None:
-    opus_frame_samples = 960  # 20 ms, 48 kHz
-    opus_frame_bytes = opus_frame_samples * 4  # float32
-
-    sent = 0
-    remainder = b""
-    with Path("send_chunks.raw").open("wb") as f:  # noqa: ASYNC230
-        for pcm_int16 in chunks:
-            remainder += pcm_int16
-            while len(remainder) >= opus_frame_bytes:
-                frame = remainder[:opus_frame_bytes]
-                remainder = remainder[opus_frame_bytes:]
-                f.write(frame)
-                opus_packet = opus_encoder.encode(frame)
-                await ws.send(bytes(opus_packet))
-                sent += 1
-
-        if remainder:
-            frame = remainder + b"\x00" * (opus_frame_bytes - len(remainder))
-            f.write(frame)
-            opus_packet = opus_encoder.encode(frame)
-            await ws.send(bytes(opus_packet))
-            sent += 1
-
-    print(f"send_chunks: sent {sent} opus packets")
+        pcm_f32 = ggwave.encode(signed.decode("latin-1"), protocolId=1, volume=20)
+        out += float32_to_int16(pcm_f32)
+    return out
 
 
-async def handle_connection(ws: ServerConnection) -> None:  # noqa: PLR0912, PLR0915
-    print("New connection established")
+RTP_HEADER_SIZE = 12
 
-    opus_decoder = OpusDecoder()
-    opus_decoder.set_channels(2)
-    opus_decoder.set_sampling_frequency(48000)
 
-    opus_encoder = OpusEncoder()
-    opus_encoder.set_channels(2)
-    opus_encoder.set_sampling_frequency(48000)
-    opus_encoder.set_application("audio")
+def make_rtp(payload: bytes, seq: int, ts: int, ssrc: int, pt: int) -> bytes:
+    return struct.pack(
+        "!BBHII", 0x80, pt,
+        seq & 0xffff, ts & 0xffffffff, ssrc & 0xffffffff,
+    ) + payload
+
+
+def parse_rtp(data: bytes) -> bytes | None:
+    return data[RTP_HEADER_SIZE:] if len(data) >= RTP_HEADER_SIZE else None
+
+
+# ---------------------------------------------------------------------------
+# Per-call handler
+# ---------------------------------------------------------------------------
+
+async def handle_call(channel_id: str) -> None:
+    print(f"Handling call {channel_id}")
+
+    try:
+        ari_post(f"/channels/{channel_id}/answer")
+    except Exception as e:
+        print(f"Failed to answer {channel_id}: {e}")
+        return
+
+    ext_id = bridge_id = None
+    try:
+        ext = ari_post(
+            "/channels/externalMedia",
+            app=STASIS_APP,
+            external_host=f"{SERVER_HOST}:{RTP_PORT}",
+            format="slin48",
+        )
+        ext_id = ext["id"]
+        print(f"External media channel: {ext_id}")
+
+        bridge = ari_post("/bridges", type="mixing")
+        bridge_id = bridge["id"]
+        ari_post(f"/bridges/{bridge_id}/addChannel", channel=f"{channel_id},{ext_id}")
+        print(f"Bridge {bridge_id} created")
+    except Exception as e:
+        print(f"Setup error: {e}")
+        return
 
     ggwave_instance = ggwave.init()
 
-    state = HandlerState.WAITING
-    buf = b""
-    header: PayloadHeaderV1 | None = None
-    cur_msg = b""
-    cur_len = 0
-    audio_f = Path("integration.raw").open("wb")  # noqa: ASYNC230, SIM115
-    data_f = None
-    recv_seq_no = -1
+    class State(Enum):
+        WAITING       = auto()
+        READING_FNAME = auto()
+        READING_DATA  = auto()
+
+    state       = State.WAITING
+    header      = None
+    cur_msg     = b""
+    cur_len     = 0
+    data_f      = None
     send_seq_no = 0
+    decode_buf  = b""
+    rtp_addr    = None
+    rtp_pt      = 126   # will be overwritten from first packet
+    rtp_seq     = 0
+    rtp_ts      = 0
+    rtp_ssrc    = 0x12345678
+
+    loop = asyncio.get_event_loop()
+    audio_f = Path(f"ari_recv_{channel_id}.raw").open("wb")
 
     try:
         while True:
-            data = await ws.recv()
+            try:
+                data, addr = await asyncio.wait_for(
+                    loop.sock_recvfrom(rtp_sock, 4096),
+                    timeout=30.0,
+                )
+            except asyncio.TimeoutError:
+                print(f"RTP timeout for {channel_id}")
+                break
 
-            if isinstance(data, str):
-                data = json.loads(data)
-                print(data)
-                if data["request"] == "setup":
-                    await ws.send(
-                        json.dumps(
-                            {
-                                "response": "setup",
-                                "id": data["id"],
-                                "codecs": [{"name": "opus"}],
-                            }
-                        )
-                    )
-            else:
+            if rtp_addr is None:
+                rtp_addr = addr
+                rtp_pt   = data[1] & 0x7f
+                print(f"Asterisk RTP addr: {rtp_addr}, PT={rtp_pt}")
+
+            pcm = parse_rtp(data)
+            if not pcm:
+                continue
+
+            # Asterisk sends BE L16 — convert to LE for processing
+            pcm_le = np.frombuffer(pcm, dtype=">i2").astype("<i2").tobytes()
+            audio_f.write(pcm_le)
+            decode_buf += int16_to_float32(pcm_le)
+
+            while len(decode_buf) >= GGWAVE_DECODE_CHUNK * 4:
+                chunk      = decode_buf[:GGWAVE_DECODE_CHUNK * 4]
+                decode_buf = decode_buf[GGWAVE_DECODE_CHUNK * 4:]
+
                 try:
-                    data = opus_decoder.decode(memoryview(bytearray(data)))
-                    # print(f"Packet #{packet_id}")
-                    # with wave.open("out.wav", "wb") as wf:
-                    #     wf.setnchannels(2)
-                    #     wf.setsampwidth(2)
-                    #     wf.setframerate(48000)
-                    #     wf.writeframes(recording)
-
-                    # p = pyaudio.PyAudio()
-                    # stream = p.open(format=pyaudio.paFloat32, channels=1, rate=48000, output=True)
-                    # stream.write(int16_to_float32(split_by_channels(data)[0]))
-                    # stream.stop_stream()
-                    # stream.close()
-
-                    payload = int16_to_float32(split_by_channels(data)[0])
-                    audio_f.write(payload)
-                    buf += payload
-
-                    if len(buf) >= GGWAVE_DECODE_CHUNK_SIZE:
-                        # print("Decoding")
-                        chunk = buf[:GGWAVE_DECODE_CHUNK_SIZE]
-                        buf = buf[GGWAVE_DECODE_CHUNK_SIZE:]
-                        ggdecoded: bytes = ggwave.decode(ggwave_instance, chunk)
-                        if ggdecoded is not None:
-                            print("GOT A PART:", ggdecoded)
-
-                            checksum_valid, gotten_seq_no = validate_checksum(ggdecoded)
-                            if not checksum_valid:
-                                recv_seq_no += 1
-                                # pending_seq_nos.add(recv_seq_no)
-
-                                print(f"ERROR: invalid checksum, seq_no: {recv_seq_no}")
-
-                                # TODO float32_to_int16
-                                # ack = Ack(seq_no=recv_seq_no, accepted=checksum_valid).to_bytes()
-                                # signed_ack = append_checksum(ack)
-                                # ggencoded_ack = ggwave.encode(
-                                #     payload,
-                                #     protocolId=1,
-                                #     volume=20,
-                                # )
-                                # opus_ack = opus_encoder.encode(ggencoded_ack)
-                                # await ws.send(opus_ack)
-                            else:
-                                recv_seq_no = gotten_seq_no
-
-                            ggdecoded = remove_integrity_data(ggdecoded)
-
-                            if state == HandlerState.READING_DATA:
-                                cur_msg_end_in_chunk = min(len(ggdecoded), header.len - cur_len)
-                                if header.type == PayloadType.TEXT:
-                                    cur_msg += ggdecoded[:cur_msg_end_in_chunk]
-                                else:
-                                    if cur_msg:
-                                        data_f.write(cur_msg)
-                                        cur_msg = b""
-                                    data_f.write(ggdecoded[:cur_msg_end_in_chunk])
-                                cur_len += cur_msg_end_in_chunk
-                                # TODO process ggdecoded’s continuation
-
-                                print(f"{cur_len} bytes so far")
-
-                            elif state == HandlerState.WAITING:
-                                # pcm_chunks = encode_payload(ggdecoded, send_seq_no)
-                                # send_seq_no += len(pcm_chunks)
-                                # await send_chunks(ws, opus_encoder, pcm_chunks)
-                                # continue
-
-                                header, offset = PayloadHeaderV1.from_bytes(ggdecoded)
-                                cur_msg = ggdecoded[offset:]
-                                cur_len = len(ggdecoded) - offset
-
-                                name_len = header.name_len
-                                if name_len > 0:
-                                    state = HandlerState.READING_FNAME
-                                    print(f"EXPECTING file name of {name_len} bytes")
-
-                                    if cur_len >= name_len:  # fname fits this chunk
-                                        data_f = Path(cur_msg[:name_len].decode()).open("wb")  # noqa: ASYNC230, SIM115
-                                        state = HandlerState.READING_DATA
-                                        cur_msg = cur_msg[name_len:]
-                                        cur_len -= name_len
-
-                                        state = HandlerState.READING_DATA
-                                        print(
-                                            f"EXPECTING {header.len} bytes of {header.type}, "
-                                            f"already got {cur_len} bytes"
-                                        )
-                                else:
-                                    if header.type == PayloadType.DATA:
-                                        data_f = Path(str(uuid4())).open("wb")  # noqa: ASYNC230, SIM115
-                                    state = HandlerState.READING_DATA
-                                    print(f"EXPECTING {header.len} bytes of {header.type}, already got {cur_len} bytes")
-
-                            elif state == HandlerState.READING_FNAME:
-                                if cur_len + len(ggdecoded) >= header.name_len:
-                                    name_end = header.name_len - cur_len
-                                    name = (cur_msg + ggdecoded[:name_end]).decode()
-                                    data_f = Path(name).open("wb")  # noqa: ASYNC230, SIM115
-                                    cur_msg = ggdecoded[name_end:]
-                                    cur_len = len(ggdecoded) - name_end
-
-                                    state = HandlerState.READING_DATA
-                                    if cur_len >= header.len:
-                                        cur_msg = cur_msg[: header.len]
-                                        cur_len = header.len
-                                        state = HandlerState.WAITING
-
-                                else:
-                                    cur_msg += ggdecoded
-                                    cur_len += len(ggdecoded)
-
-                            if header is not None and cur_len == header.len:
-                                match header.type:
-                                    case PayloadType.DATA:
-                                        data_f.flush()
-                                        data_f.close()
-                                        print(f"file {data_f.name} written")
-                                        echo_payload = PayloadV1(PayloadType.DATA, cur_msg, data_f.name).to_bytes()
-                                    case PayloadType.TEXT:
-                                        text = cur_msg.decode()
-                                        print(f"FULL MSG: {text}")
-                                        echo_payload = PayloadV1(PayloadType.TEXT, cur_msg).to_bytes()
-
-                                print(f"Echoing {echo_payload}")
-                                pcm_chunks = encode_payload(echo_payload, send_seq_no)
-                                send_seq_no += len(pcm_chunks)
-                                await send_chunks(ws, opus_encoder, pcm_chunks)
-
-                                buf = b""
-                                header = None
-                                cur_msg = b""
-                                cur_len = 0
-                                data_f = None
-                                state = HandlerState.WAITING
-
+                    ggdecoded = ggwave.decode(ggwave_instance, chunk)
                 except Exception:
-                    print(f"Error decoding message: {traceback.format_exc()}")
+                    print(f"ggwave.decode: {traceback.format_exc()}")
+                    continue
 
-                # packet_id += 1
-    except websockets.exceptions.ConnectionClosed:
-        print("Connection closed")
-        audio_f.flush()
-        audio_f.close()
+                if ggdecoded is None:
+                    continue
+
+                print("GOT A PART:", ggdecoded)
+
+                # DEBUG: echo raw chunk back immediately, bypass payload parsing
+                echo_bytes = PayloadV1(PayloadType.TEXT, ggdecoded).to_bytes()
+                print(f"Echoing {len(echo_bytes)} bytes (debug)")
+                pcm_out_le = encode_payload(echo_bytes, send_seq_no)
+                send_seq_no += 1
+
+                Path(f"ari_send_{channel_id}_le.raw").write_bytes(pcm_out_le)
+                pcm_out_be = np.frombuffer(pcm_out_le, dtype="<i2").astype(">i2").tobytes()
+                Path(f"ari_send_{channel_id}_be.raw").write_bytes(pcm_out_be)
+
+                for i in range(0, len(pcm_out_le), FRAME_BYTES):
+                    frame = pcm_out_le[i:i + FRAME_BYTES]
+                    if len(frame) < FRAME_BYTES:
+                        frame += b"\x00" * (FRAME_BYTES - len(frame))
+                    pkt = make_rtp(frame, rtp_seq, rtp_ts, rtp_ssrc, rtp_pt)
+                    rtp_sock.sendto(pkt, rtp_addr)
+                    rtp_seq += 1
+                    rtp_ts += FRAME_SAMPLES
+                continue
+                # END DEBUG
+
+                checksum_valid, _ = validate_checksum(ggdecoded)
+                if not checksum_valid:
+                    print("ERROR: invalid checksum")
+                ggdecoded = remove_integrity_data(ggdecoded)
+
+                if state == State.READING_DATA:
+                    end = min(len(ggdecoded), header.len - cur_len)
+                    if header.type == PayloadType.TEXT:
+                        cur_msg += ggdecoded[:end]
+                    else:
+                        if cur_msg:
+                            data_f.write(cur_msg); cur_msg = b""
+                        data_f.write(ggdecoded[:end])
+                    cur_len += end
+                    print(f"{cur_len} bytes so far")
+
+                elif state == State.WAITING:
+                    header, offset = PayloadHeaderV1.from_bytes(ggdecoded)
+                    cur_msg = ggdecoded[offset:]
+                    cur_len = len(ggdecoded) - offset
+                    if header.name_len > 0:
+                        state = State.READING_FNAME
+                        if cur_len >= header.name_len:
+                            data_f = Path(cur_msg[:header.name_len].decode()).open("wb")
+                            cur_msg = cur_msg[header.name_len:]
+                            cur_len -= header.name_len
+                            state = State.READING_DATA
+                    else:
+                        if header.type == PayloadType.DATA:
+                            data_f = Path(str(uuid4())).open("wb")
+                        state = State.READING_DATA
+                        print(f"EXPECTING {header.len} bytes of {header.type}")
+
+                elif state == State.READING_FNAME:
+                    if cur_len + len(ggdecoded) >= header.name_len:
+                        name_end = header.name_len - cur_len
+                        name = (cur_msg + ggdecoded[:name_end]).decode()
+                        data_f = Path(name).open("wb")
+                        cur_msg = ggdecoded[name_end:]
+                        cur_len = len(ggdecoded) - name_end
+                        state = State.READING_DATA
+                    else:
+                        cur_msg += ggdecoded
+                        cur_len += len(ggdecoded)
+
+                if header is not None and cur_len == header.len:
+                    if header.type == PayloadType.DATA:
+                        data_f.flush(); data_f.close()
+                        print(f"File {data_f.name} written")
+                        echo_bytes = PayloadV1(PayloadType.DATA, cur_msg, data_f.name).to_bytes()
+                    else:
+                        print(f"FULL MSG: {cur_msg.decode()}")
+                        echo_bytes = PayloadV1(PayloadType.TEXT, cur_msg).to_bytes()
+
+                    if rtp_addr:
+                        print(f"Echoing {len(echo_bytes)} bytes")
+                        pcm_out_le = encode_payload(echo_bytes, send_seq_no)
+                        send_seq_no += len(echo_bytes) // RAW_GGWAVE_CHUNK_SIZE + 1
+
+                        # Save both LE and BE versions for debugging
+                        Path(f"ari_send_{channel_id}_le.raw").write_bytes(pcm_out_le)
+                        pcm_out_be = np.frombuffer(pcm_out_le, dtype="<i2").astype(">i2").tobytes()
+                        Path(f"ari_send_{channel_id}_be.raw").write_bytes(pcm_out_be)
+
+                        for i in range(0, len(pcm_out_le), FRAME_BYTES):
+                            frame = pcm_out_le[i:i + FRAME_BYTES]
+                            if len(frame) < FRAME_BYTES:
+                                frame += b"\x00" * (FRAME_BYTES - len(frame))
+                            pkt = make_rtp(frame, rtp_seq, rtp_ts, rtp_ssrc, rtp_pt)
+                            rtp_sock.sendto(pkt, rtp_addr)
+                            rtp_seq += 1
+                            rtp_ts += FRAME_SAMPLES
+
+                    state      = State.WAITING
+                    header     = None
+                    cur_msg    = b""
+                    cur_len    = 0
+                    data_f     = None
+                    decode_buf = b""
+
     finally:
+        audio_f.flush(); audio_f.close()
         ggwave.free(ggwave_instance)
+        if bridge_id:
+            try: ari_delete(f"/bridges/{bridge_id}")
+            except Exception: pass
+        if ext_id:
+            try: ari_delete(f"/channels/{ext_id}")
+            except Exception: pass
+        try: ari_delete(f"/channels/{channel_id}")
+        except Exception: pass
+        print(f"Call {channel_id} done")
 
 
-async def run_server(host: str, port: int) -> None:
-    server = await websockets.serve(handle_connection, host, port)
-    print(f"WebSocket server running on ws://{host}:{port}")
-    await server.wait_closed()
+# ---------------------------------------------------------------------------
+# ARI WebSocket event loop
+# ---------------------------------------------------------------------------
+
+async def run() -> None:
+    print(f"Connecting to ARI: {ARI_WS}")
+    async with websockets.connect(ARI_WS) as ws:
+        print("Connected")
+        async for raw in ws:
+            ev      = json.loads(raw)
+            ev_type = ev.get("type")
+            channel = ev.get("channel", {})
+            ch_id   = channel.get("id", "")
+            ch_name = channel.get("name", "")
+
+            if "UnicastRTP" in ch_name:
+                continue
+
+            if ev_type == "StasisStart":
+                print(f"StasisStart: {ch_id} ({ch_name})")
+                asyncio.create_task(handle_call(ch_id))
+            elif ev_type == "StasisEnd":
+                print(f"StasisEnd: {ch_id} ({ch_name})")
 
 
 if __name__ == "__main__":
-    asyncio.run(run_server(host="192.168.57.1", port=12345))
+    asyncio.run(run())
