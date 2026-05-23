@@ -6,17 +6,25 @@ from pathlib import Path
 import numpy as np
 
 FREQ = 8000
+SILENCE_THRESHOLD = 0.01
+SILENCE_NEEDED = FREQ // 4
 
 
 class MinimodemDecoder:
-    def __init__(self) -> None:
+    def __init__(self, baud: int = 300):
         self.buf = np.array([], dtype=np.float32)
+        self.baud = baud
+        self.silence_samples = 0
 
     def feed(self, samples: np.ndarray) -> bytes | None:
         self.buf = np.concatenate([self.buf, samples])
 
-        # accumulate ~2 seconds before trying to decode
-        if len(self.buf) < FREQ * 2:
+        if np.max(np.abs(samples)) < SILENCE_THRESHOLD:
+            self.silence_samples += len(samples)
+        else:
+            self.silence_samples = 0
+
+        if self.silence_samples < SILENCE_NEEDED or len(self.buf) < FREQ // 2:
             return None
 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
@@ -28,19 +36,14 @@ class MinimodemDecoder:
             wf.setframerate(FREQ)
             wf.writeframes((self.buf * 32767).astype(np.int16).tobytes())
 
-        result = subprocess.run(  # noqa: S603
-            ["minimodem", "--rx", "-f", tmppath, "300"],  # noqa: S607
+        result = subprocess.run(
+            ["minimodem", "--rx", "--rx-one", "-f", tmppath, str(self.baud)],
             capture_output=True,
-            check=False,
         )
 
         Path(tmppath).unlink()
 
-        decoded = result.stdout
-        if decoded:
-            self.buf = np.array([], dtype=np.float32)
-            return decoded
+        self.buf = np.array([], dtype=np.float32)
+        self.silence_samples = 0
 
-        # keep last 0.5s for overlap in case message straddles a window
-        self.buf = self.buf[-4000:]
-        return None
+        return result.stdout if result.stdout else None
