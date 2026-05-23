@@ -1,4 +1,3 @@
-import array
 import asyncio
 import json
 import traceback
@@ -6,13 +5,13 @@ from enum import Enum, auto
 from pathlib import Path
 from uuid import uuid4
 
+import audioop
 import numpy as np
 import websockets
 from websockets import ServerConnection
 
-from deps.pyogg import OpusDecoder
-from fsk import FskDecoder
 from integrity_manager import remove_integrity_data, validate_checksum
+from minimodem import MinimodemDecoder
 from models import PayloadHeaderV1, PayloadType
 
 GGWAVE_CHUNK_SIZE = 4096
@@ -24,40 +23,26 @@ class HandlerState(Enum):
     READING_DATA = auto()
 
 
-def split_by_channels(recording: bytes) -> tuple[bytes, bytes]:
-    samples = array.array("h")
-    samples.frombytes(recording)
+def ulaw_to_float32(recording: bytes) -> np.ndarray:
+    pcm16 = audioop.ulaw2lin(recording, 2)
+    float32 = np.frombuffer(pcm16, dtype=np.int16).astype(np.float32) / 32768
 
-    l = array.array("h")  # noqa: E741
-    r = array.array("h")
-
-    for i in range(0, len(samples), 2):
-        l.append(samples[i])
-        r.append(samples[i + 1])
-
-    return l.tobytes(), r.tobytes()
-
-
-def int16_to_float32(recording: bytes) -> bytes:
-    pcm = np.frombuffer(recording, dtype=np.int16)
-    pcm = pcm.astype(np.float32) / 32768
-
-    return pcm.tobytes()
+    return float32
 
 
 async def handle_connection(ws: ServerConnection) -> None:  # noqa: PLR0912, PLR0915
     print("New connection established")
 
-    opus_decoder = OpusDecoder()
-    opus_decoder.set_channels(2)
-    opus_decoder.set_sampling_frequency(48000)
+    # opus_decoder = OpusDecoder()
+    # opus_decoder.set_channels(2)
+    # opus_decoder.set_sampling_frequency(48000)
 
     # opus_encoder = OpusEncoder()
     # opus_encoder.set_channels(1)
     # opus_encoder.set_sampling_frequency(48000)
     # opus_encoder.set_application("audio")
 
-    fsk_decoder = FskDecoder()
+    data_decoder = MinimodemDecoder()
 
     state = HandlerState.WAITING
     header: PayloadHeaderV1 | None = None
@@ -81,13 +66,14 @@ async def handle_connection(ws: ServerConnection) -> None:  # noqa: PLR0912, PLR
                             {
                                 "response": "setup",
                                 "id": data["id"],
-                                "codecs": [{"name": "opus"}],
+                                "codecs": [{"name": "ulaw"}],
                             }
                         )
                     )
             else:
                 try:
-                    data = opus_decoder.decode(memoryview(bytearray(data)))
+                    # data = opus_decoder.decode(memoryview(bytearray(data)))
+
                     # print(f"Packet #{packet_id}")
                     # with wave.open("out.wav", "wb") as wf:
                     #     wf.setnchannels(2)
@@ -101,11 +87,10 @@ async def handle_connection(ws: ServerConnection) -> None:  # noqa: PLR0912, PLR
                     # stream.stop_stream()
                     # stream.close()
 
-                    payload = int16_to_float32(split_by_channels(data)[0])
-                    audio_f.write(payload)
+                    payload = ulaw_to_float32(data)
+                    audio_f.write(payload.tobytes())
                     # print("Decoding")
-                    samples = np.frombuffer(payload, dtype=np.float32)
-                    decoded = fsk_decoder.feed(samples)
+                    decoded = data_decoder.feed(payload)
                     if decoded is not None:
                         print("GOT A PART:", decoded)
 
