@@ -12,7 +12,6 @@ requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.dependencies]
-ggwave = "0.4.2"
 numpy = "^2.4.4"
 pyaudio = "0.2.14"
 audioop-lts = "^0.2.2"
