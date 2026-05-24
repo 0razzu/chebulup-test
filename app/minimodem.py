@@ -6,12 +6,14 @@ from pathlib import Path
 import numpy as np
 
 FREQ = 8000
+MARK = 1200
+SPACE = 2000
 SILENCE_THRESHOLD = 0.01
 SILENCE_NEEDED = FREQ // 4
 
 
 class MinimodemDecoder:
-    def __init__(self, baud: int = 300):
+    def __init__(self, baud: int = 600):
         self.buf = np.array([], dtype=np.float32)
         self.baud = baud
         self.silence_samples = 0
@@ -36,9 +38,20 @@ class MinimodemDecoder:
             wf.setframerate(FREQ)
             wf.writeframes((self.buf * 32767).astype(np.int16).tobytes())
 
-        result = subprocess.run(
-            ["minimodem", "--rx", "--rx-one", "-f", tmppath, str(self.baud)],
-            capture_output=True,
+        result = subprocess.run(  # noqa: S603
+            [
+                "minimodem",
+                "--rx",
+                "--rx-one",
+                "-f",
+                tmppath,
+                str(self.baud),
+                "--mark",
+                str(MARK),
+                "--space",
+                str(SPACE),
+            ],  # noqa: S607
+            capture_output=True, check=False,
         )
 
         Path(tmppath).unlink()
