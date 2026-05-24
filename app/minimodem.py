@@ -5,15 +5,16 @@ from pathlib import Path
 
 import numpy as np
 
+BAUD_RATE = 800
 FREQ = 8000
 MARK = 1200
 SPACE = 2000
 SILENCE_THRESHOLD = 0.01
-SILENCE_NEEDED = FREQ // 4
+SILENCE_NEEDED = FREQ // 8
 
 
 class MinimodemDecoder:
-    def __init__(self, baud: int = 600):
+    def __init__(self, baud: int = BAUD_RATE):
         self.buf = np.array([], dtype=np.float32)
         self.baud = baud
         self.silence_samples = 0
